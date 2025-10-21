@@ -17,12 +17,12 @@ COLORS = {
     "Yellow": (0, 255, 255),
     "White": (255, 255, 255)
 }
+
 color_names = list(COLORS.keys())
 selected_color = COLORS["Green"]
 
 # --- MEDIAPIPE SETUP ---
 mp_hands = mp.solutions.hands
-mp_drawing = mp.solutions.drawing_utils
 
 # --- CAMERA INIT ---
 cap = cv2.VideoCapture(0)
@@ -57,16 +57,20 @@ def count_fingers(lm):
     return sum(fingers)
 
 def draw_color_bar(frame):
-    """Draw color palette bar at top of screen"""
-    bar_height = 60
-    step = WINDOW_WIDTH // len(COLORS)
+    bar_y = 60
+    radius = 25
+    spacing = WINDOW_WIDTH // (len(COLORS) + 1)
     for i, name in enumerate(color_names):
         color = COLORS[name]
-        x1, x2 = i * step, (i + 1) * step
-        cv2.rectangle(frame, (x1, 0), (x2, bar_height), color, -1)
+        cx = spacing * (i + 1)
+        cy = bar_y
+        # Draw color circle
+        cv2.circle(frame, (cx, cy), radius, color, -1)
+        # Highlight selected color
         if color == selected_color:
-            cv2.rectangle(frame, (x1, 0), (x2, bar_height), (255, 255, 255), 3)
-        cv2.putText(frame, name, (x1 + 10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2)
+            cv2.circle(frame, (cx, cy), radius + 5, (255, 255, 255), 3)
+        cv2.putText(frame, name, (cx - 35, cy + 55), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2)
+
 
 # --- HAND TRACKING LOOP ---
 with mp_hands.Hands(
@@ -82,7 +86,7 @@ with mp_hands.Hands(
         frame = cv2.flip(frame, 1)
         h, w, _ = frame.shape
         if canvas is None:
-            canvas = np.zeros_like(frame)
+            canvas = np.zeros((h, w, 3), dtype=np.uint8)
 
         image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         results = hands.process(image_rgb)
@@ -91,7 +95,6 @@ with mp_hands.Hands(
             for hand_landmarks in results.multi_hand_landmarks:
                 lm = hand_landmarks.landmark
 
-                # Landmark points
                 index_tip = lm[mp_hands.HandLandmark.INDEX_FINGER_TIP]
                 index_pip = lm[mp_hands.HandLandmark.INDEX_FINGER_PIP]
                 thumb_tip = lm[mp_hands.HandLandmark.THUMB_TIP]
@@ -99,7 +102,6 @@ with mp_hands.Hands(
                 x_i, y_i = int(index_tip.x * w), int(index_tip.y * h)
                 x_t, y_t = int(thumb_tip.x * w), int(thumb_tip.y * h)
 
-                # Finger logic
                 finger_count = count_fingers(lm)
                 distance = math.hypot(x_t - x_i, y_t - y_i)
                 pinch = distance < PINCH_THRESHOLD * w
@@ -118,7 +120,7 @@ with mp_hands.Hands(
                     mode = "select"
                     draw_color_bar(frame)
                     bar_height = 60
-                    if y_i < bar_height:  # if pinch is inside color bar
+                    if y_i < bar_height:
                         step = WINDOW_WIDTH // len(COLORS)
                         index = min(x_i // step, len(COLORS) - 1)
                         selected_color = COLORS[color_names[index]]
@@ -131,14 +133,21 @@ with mp_hands.Hands(
                     cv2.putText(frame, "✏️ Drawing Mode", (30, 90),
                                 cv2.FONT_HERSHEY_SIMPLEX, 1.2, selected_color, 3)
                     if prev_x is not None and prev_y is not None:
-                        cv2.line(canvas, (prev_x, prev_y), (x_i, y_i), selected_color, BRUSH_SIZE)
+                        cv2.line(canvas, (prev_x, prev_y), (x_i, y_i), selected_color, BRUSH_SIZE, cv2.LINE_8)
                     prev_x, prev_y = x_i, y_i
 
                 else:
                     prev_x, prev_y = None, None
 
-        # --- Combine Frame + Canvas ---
-        combined = cv2.addWeighted(frame, 1, canvas, 1, 0)
+        # --- Combine Frame + Canvas (Solid Color Merge) ---
+        gray = cv2.cvtColor(canvas, cv2.COLOR_BGR2GRAY)
+        _, mask = cv2.threshold(gray, 10, 255, cv2.THRESH_BINARY)
+        inv_mask = cv2.bitwise_not(mask)
+
+        frame_bg = cv2.bitwise_and(frame, frame, mask=inv_mask)
+        canvas_fg = cv2.bitwise_and(canvas, canvas, mask=mask)
+        combined = cv2.add(frame_bg, canvas_fg)
+
         draw_color_bar(combined)
         cv2.imshow('AirDraw', combined)
 
@@ -147,7 +156,7 @@ with mp_hands.Hands(
         if key == ord('q'):
             break
         elif key == ord('c'):
-            canvas = np.zeros_like(frame)
+            canvas = np.zeros_like(frame, dtype=np.uint8)
             print("🧹 Canvas cleared")
 
 # --- CLEANUP ---
