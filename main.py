@@ -3,13 +3,14 @@ import mediapipe as mp
 import math
 
 # --- CONFIGURATION ---
-WINDOW_WIDTH, WINDOW_HEIGHT = 720, 450
-PINCH_THRESHOLD = 0.05  # smaller = more sensitive (distance between thumb & index)
+WINDOW_WIDTH, WINDOW_HEIGHT = 1280, 720
+PINCH_THRESHOLD = 0.05  # Distance between thumb & index to consider as "pinch"
+DRAW_COLOR = (0, 255, 0)  # Green drawing color
+BRUSH_SIZE = 6
 
 # --- MEDIAPIPE HANDS SETUP ---
 mp_hands = mp.solutions.hands
 mp_drawing = mp.solutions.drawing_utils
-mp_drawing_styles = mp.solutions.drawing_styles
 
 # --- CAMERA INIT ---
 cap = cv2.VideoCapture(0)
@@ -17,17 +18,24 @@ if not cap.isOpened():
     print("❌ Error: Could not open webcam.")
     exit()
 
-cv2.namedWindow('Finger Tracking', cv2.WINDOW_NORMAL)
-cv2.resizeWindow('Finger Tracking', WINDOW_WIDTH, WINDOW_HEIGHT)
-cv2.moveWindow('Finger Tracking', 100, 100)
+cv2.namedWindow('Air Draw', cv2.WINDOW_NORMAL)
+cv2.resizeWindow('Air Draw', WINDOW_WIDTH, WINDOW_HEIGHT)
+cv2.moveWindow('Air Draw', 100, 100)
 
-print("🖐 Starting finger tracking...")
+print("🎨 Air Drawing Activated")
 print("📋 Controls:")
+print("   - Pinch thumb + index to draw")
+print("   - Press 'C' to clear canvas")
 print("   - Press 'Q' to quit")
+
+# --- INITIAL STATE ---
+drawing = False
+prev_x, prev_y = None, None
+canvas = None
 
 # --- HAND TRACKING LOOP ---
 with mp_hands.Hands(
-    max_num_hands=2,
+    max_num_hands=1,
     min_detection_confidence=0.5,
     min_tracking_confidence=0.5
 ) as hands:
@@ -38,50 +46,70 @@ with mp_hands.Hands(
             print("⚠️ Ignoring empty frame.")
             continue
 
-        # Mirror and convert to RGB
         frame = cv2.flip(frame, 1)
+        h, w, _ = frame.shape
+        if canvas is None:
+            canvas = frame.copy() * 0  # Black transparent canvas
+
+        # Convert to RGB for MediaPipe
         image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         results = hands.process(image_rgb)
 
-        # --- VISUALIZATION ---
-        annotated = frame.copy()
-
         if results.multi_hand_landmarks:
             for hand_landmarks in results.multi_hand_landmarks:
-                # Draw hand landmarks
-                mp_drawing.draw_landmarks(
-                    annotated,
-                    hand_landmarks,
-                    mp_hands.HAND_CONNECTIONS,
-                    mp_drawing_styles.get_default_hand_landmarks_style(),
-                    mp_drawing_styles.get_default_hand_connections_style()
-                )
-
-                # --- PINCH DETECTION ---
+                # Get thumb and index coordinates
                 thumb_tip = hand_landmarks.landmark[mp_hands.HandLandmark.THUMB_TIP]
                 index_tip = hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_TIP]
 
-                # Compute normalized distance between thumb & index
-                dx = thumb_tip.x - index_tip.x
-                dy = thumb_tip.y - index_tip.y
-                distance = math.sqrt(dx * dx + dy * dy)
+                # Convert normalized coords to pixel coords
+                x1, y1 = int(thumb_tip.x * w), int(thumb_tip.y * h)
+                x2, y2 = int(index_tip.x * w), int(index_tip.y * h)
 
-                # --- Check for pinch gesture ---
-                if distance < PINCH_THRESHOLD:
-                    cv2.putText(annotated, "🤏 PINCH DETECTED!", (20, 40),
-                                cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 3)
+                # Compute distance
+                distance = math.hypot(x2 - x1, y2 - y1)
+
+                # Draw visual markers
+                cv2.circle(frame, (x1, y1), 8, (255, 0, 255), -1)
+                cv2.circle(frame, (x2, y2), 8, (255, 0, 255), -1)
+                cv2.line(frame, (x1, y1), (x2, y2), (255, 0, 255), 2)
+
+                # Calculate midpoint (where we draw)
+                mid_x, mid_y = (x1 + x2) // 2, (y1 + y2) // 2
+
+                # --- PINCH TO DRAW ---
+                if distance < PINCH_THRESHOLD * w:
+                    if not drawing:
+                        drawing = True
+                        prev_x, prev_y = mid_x, mid_y
+                        print("🖊 Drawing started")
+
+                    # Draw line from previous to current point
+                    if prev_x is not None and prev_y is not None:
+                        cv2.line(canvas, (prev_x, prev_y), (mid_x, mid_y), DRAW_COLOR, BRUSH_SIZE)
+                    prev_x, prev_y = mid_x, mid_y
                 else:
-                    cv2.putText(annotated, "No Pinch", (20, 40),
-                                cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 3)
+                    if drawing:
+                        drawing = False
+                        prev_x, prev_y = None, None
+                        print("✋ Drawing stopped")
 
-        # --- DISPLAY FRAME ---
-        cv2.imshow('Finger Tracking', annotated)
+        # Combine frame + canvas overlay
+        combined = cv2.addWeighted(frame, 1, canvas, 1, 0)
 
-        if cv2.waitKey(5) & 0xFF == ord('q'):
+        # --- DISPLAY ---
+        cv2.putText(combined, "Press 'C' to clear | 'Q' to quit",
+                    (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+        cv2.imshow('Air Draw', combined)
+
+        # --- KEY CONTROLS ---
+        key = cv2.waitKey(5) & 0xFF
+        if key == ord('q'):
             break
+        elif key == ord('c'):
+            canvas = frame.copy() * 0
+            print("🧹 Canvas cleared")
 
 # --- CLEANUP ---
-print("👋 Exiting...")
 cap.release()
 cv2.destroyAllWindows()
-print("✅ Done.")
+print("✅ Exited cleanly.")
